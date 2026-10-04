@@ -6,7 +6,7 @@ define space register type=register_space size=2;
 define space mem      type=ram_space      size=3 wordsize=2;
 
 define register offset=0x0 size=4 [ a     x                   ];
-define register offset=0x0 size=2 [ ah al xh xl y pc lr flags ];
+define register offset=0x0 size=2 [ al ah xl xh y pc lr flags ];
 
 define bitrange
     z=flags[0,1]
@@ -26,7 +26,7 @@ define context contextreg
 define token opc (16)
     f_all=(0,15)
     f_sopnd=(8,15) signed
-    f_opnd=(8,15) 
+    f_opnd=(8,15)
     f_opnd_hi1=(15,15)
     f_opnd_lo4=(8,11)
     dummy1=(13,15)
@@ -46,8 +46,8 @@ attach variables [ f_mode ] [ _ _ xl y ];
 attach variables [ f_ld ] [ _ _ _ _ _ flags xl y _ _ _ _ _ _ xh _ ];
 attach variables [ f_st ] [ _ flags xl y _ _ _ _ _ _ xh _ _ _ _ _ ];
 
-uimmval: val                is f_opnd & ext
-[ val = f_opnd + (ext << 8); ]
+uimmval: val                is f_sopnd & ext
+[ val = (f_sopnd + (ext << 8)) & 0xffff; ]
 { export *[const]:2 val; }
 
 simmval: val                is f_sopnd & ext
@@ -57,11 +57,11 @@ simmval: val                is f_sopnd & ext
 imm: "#"simmval            is simmval                          { export simmval; }
 
 data: imm                  is f_mode=0 & imm                   { export imm; }
-data: "@XAP_AH"            is f_mode=1 & f_opnd=0xe0           { export ah; }
-data: "@XAP_AL"            is f_mode=1 & f_opnd=0xe1           { export al; }
-data: "@XAP_UXH"           is f_mode=1 & f_opnd=0xe2           { export xh; }
-data: "@XAP_UXL"           is f_mode=1 & f_opnd=0xe3           { export xl; }
-data: "@XAP_UY"            is f_mode=1 & f_opnd=0xe4           { export y; }
+data: "@XAP_AH"            is f_mode=1 & f_opnd=0xe0 & ext=0   { export ah; }
+data: "@XAP_AL"            is f_mode=1 & f_opnd=0xe1 & ext=0   { export al; }
+data: "@XAP_UXH"           is f_mode=1 & f_opnd=0xe2 & ext=0   { export xh; }
+data: "@XAP_UXL"           is f_mode=1 & f_opnd=0xe3 & ext=0   { export xl; }
+data: "@XAP_UY"            is f_mode=1 & f_opnd=0xe4 & ext=0   { export y; }
 data: "@H'"uimmval         is f_mode=1 & uimmval               { export *[mem]:2 uimmval; }
 
 off: val                   is f_sopnd & ext
@@ -69,47 +69,84 @@ off: val                   is f_sopnd & ext
 { export *[const]:2 val; }
 
 data: "@(#"off^,"x)"      is f_mode=2 & off
-{ 
+{
     local tmp:2 = xl + off; # should be xh or xl?
-    export *[mem]:2 tmp; 
+    export *[mem]:2 tmp;
 }
 
 data: "@(#"off^,"y)"      is f_mode=3 & off
 {
-    local tmp:2 = y + off; 
-    export *[mem]:2 tmp; 
+    local tmp:2 = y + off;
+    export *[mem]:2 tmp;
+}
+
+ydata: "@(#"off^,"y)"     is off
+{
+    local tmp:2 = y + off;
+    export *[mem]:2 tmp;
 }
 
 branch_addr: reloc           is f_mode=0 & f_sopnd & ext & num_prefix
 [ reloc = inst_start + num_prefix + f_sopnd + (ext << 8); ]
 { export *[code]:3 reloc; }
 
-branch_addr: "@"f_opnd       is f_mode=1 & f_opnd  { 
-    local tmp:2 = zext(f_opnd:1); 
-    tmp = (0xff00 * (tmp >> 7)) + tmp; 
-    local ptr:3 = zext(tmp);
-    export *[mem]:3 ptr; 
+adata: "@H'"uimmval      is uimmval
+{
+    export *[mem]:2 uimmval;
 }
 
-branch_addr: "X+#"off      is f_mode=2 & off
-{ 
-    local tmp:3 = zext(xh) + sext(off); 
-    export *[code]:3 tmp; 
+ind_addr: adata          is f_mode=1 & adata
+{
+    local hi:3 = zext(xh);
+    local lo:3 = zext(adata);
+    local dest:3 = ((hi & 0xff) << 16) | lo;
+    export dest;
 }
 
-branch_addr: "@(#"off^,"y)" is f_mode=3 & off 
-{ 
-    local tmp:3 = zext(y) + sext(off); 
-    export *[mem]:3 tmp; 
+ind_addr: "X+#"off      is f_mode=2 & off
+{
+    local dest:3 = x:3 + sext(off);
+    export dest;
+}
+
+ind_addr: ydata          is f_mode=3 & ydata
+{
+    local hi:3 = zext(xh);
+    local lo:3 = zext(ydata);
+    local dest:3 = ((hi & 0xff) << 16) | lo;
+    export dest;
+}
+
+retaddr: ydata           is f_mode=3 & ydata & ext=0 & (f_opnd=0xff | f_opnd=0xfd)
+{
+    local hi:3 = zext(xh);
+    local lo:3 = zext(ydata);
+    local dest:3 = ((hi & 0xff) << 16) | lo;
+    export dest;
 }
 
 macro nzflags(value) {
  n = value s< 0;
+ s = value s< 0;
  z = value == 0;
 }
 
-macro csnzflags(op1, op2, value) {
+macro addflags(op1, op2, value) {
+ local wide:4 = sext(op1) + sext(op2);
  c = carry(op1, op2);
+ n = value s< 0;
+ s = wide s< 0;
+ z = value == 0;
+}
+
+macro sbflags(op1, op2, value) {
+ c = op1 < op2;
+ n = value s< 0;
+ s = op1 s< op2;
+ z = value == 0;
+}
+
+macro lnzflags(value) {
  n = value s< 0;
  s = value s< 0;
  z = value == 0;
@@ -124,8 +161,10 @@ macro csnzflags(op1, op2, value) {
     build instruction;
 }
 
+define pcodeop blockcopy;
+
 # TODO: Figure out what bc/bc2 do
-:bc  is f_opc=0 & f_right=9 & f_opnd=0xff {}
+:bc  is f_opc=0 & f_right=9 & f_opnd=0xff { blockcopy(y, xl, al); }
 :bc2 is f_opc=0 & f_right=9 & f_opnd=0xfd {}
 
 :nop is f_all=0 {}
@@ -137,12 +176,12 @@ macro csnzflags(op1, op2, value) {
 # Return from interrupt
 :rti is f_opc=0 & f_right=0xd {}
 
-:ld f_ld, data is f_opc=0 & f_ld & f_right=5 & data {
-    f_ld = data;
+:ld f_ld, ydata is f_opc=0 & f_ld & f_right=5 & ydata {
+    f_ld = ydata;
 }
 
-:ld f_ld, data is f_opc=0 & f_ld & f_mid=3 & data {
-    f_ld = data;
+:ld f_ld, ydata is f_opc=0 & f_ld & f_mid=3 & ydata {
+    f_ld = ydata;
     nzflags(f_ld);
 }
 
@@ -151,12 +190,12 @@ macro csnzflags(op1, op2, value) {
     nzflags(f_reg);
 }
 
-:st f_st, data is f_opc=0 & f_right=1 & f_st & data {
-    f_st = data;
+:st f_st, ydata is f_opc=0 & f_right=1 & f_st & ydata {
+    ydata = f_st;
 }
 
-:st f_st, data is f_opc=0 & f_st & f_mid=1 & data {
-    f_st = data;
+:st f_st, ydata is f_opc=0 & f_st & f_mid=1 & ydata {
+    ydata = f_st;
     nzflags(f_st);
 }
 
@@ -166,56 +205,78 @@ macro csnzflags(op1, op2, value) {
 }
 
 :add f_reg, data is f_opc=3 & f_reg & data {
-    local tmp:2 = f_reg;
-    f_reg = f_reg + data;
-    csnzflags(tmp, data, f_reg);
+    local op1:2 = f_reg;
+    local op2:2 = data;
+    local res:2 = op1 + op2;
+    f_reg = res;
+    addflags(op1, op2, res);
 }
 
 :addc f_reg, data is f_opc=4 & f_reg & data {
-    local tmp:2 = f_reg;
-    f_reg = f_reg + data + zext(c);
-    csnzflags(tmp, data, f_reg);
+    local op1:2 = f_reg;
+    local op2:2 = data;
+    local cin:2 = zext(c);
+    local res:2 = op1 + op2 + cin;
+    local wide:4 = sext(op1) + sext(op2) + zext(cin);
+    f_reg = res;
+    c = carry(op1, op2) || carry(op1 + op2, cin);
+    n = res s< 0;
+    s = wide s< 0;
+    z = res == 0;
 }
 
 :sub f_reg, data is f_opc=5 & f_reg & data {
-    local tmp:2 = f_reg;
-    f_reg = f_reg - data;
-    csnzflags(tmp, data, f_reg);
+    local op1:2 = f_reg;
+    local op2:2 = data;
+    local res:2 = op1 - op2;
+    f_reg = res;
+    sbflags(op1, op2, res);
 }
 
 :subc f_reg, data is f_opc=6 & f_reg & data {
-    local tmp:2 = f_reg;
-    f_reg = f_reg - data - zext(c);
-    csnzflags(tmp, data, f_reg);
+    local op1:2 = f_reg;
+    local op2:2 = data;
+    local cin:2 = zext(c);
+    local res:2 = op1 - op2 - cin;
+    local wide:4 = sext(op1) - sext(op2) - zext(cin);
+    f_reg = res;
+    c = (op1 < op2) || ((op1 - op2) < cin);
+    n = res s< 0;
+    s = wide s< 0;
+    z = res == 0;
 }
 
 :nadd f_reg, data is f_opc=7 & f_reg & data {
-    local tmp:2 = f_reg;
-    f_reg = -f_reg + data;
-    csnzflags(tmp, data, f_reg);
+    local op1:2 = f_reg;
+    local op2:2 = data;
+    local res:2 = op2 - op1;
+    f_reg = res;
+    sbflags(op2, op1, res);
 }
 
 :cmp f_reg, data is f_opc=8 & f_reg & data {
-    local tmp:2 = f_reg - data;
-    csnzflags(f_reg, data, tmp);
+    local op1:2 = f_reg;
+    local op2:2 = data;
+    local res:2 = op1 - op2;
+    sbflags(op1, op2, res);
 }
 
 :or f_reg, data is f_opc=0xb & f_reg & data {
-    local tmp:2 = f_reg;
-    f_reg = f_reg | data;
-    csnzflags(tmp, data, f_reg);
+    local res:2 = f_reg | data;
+    f_reg = res;
+    lnzflags(res);
 }
 
 :and f_reg, data is f_opc=0xc & f_reg & data {
-    local tmp:2 = f_reg;
-    f_reg = f_reg & data;
-    csnzflags(tmp, data, f_reg);
+    local res:2 = f_reg & data;
+    f_reg = res;
+    lnzflags(res);
 }
 
 :xor f_reg, data is f_opc=0xd & f_reg & data {
-    local tmp:2 = f_reg;
-    f_reg = f_reg ^ data;
-    csnzflags(tmp, data, f_reg);
+    local res:2 = f_reg ^ data;
+    f_reg = res;
+    lnzflags(res);
 }
 
 :unsigned is f_all=9 [
@@ -225,31 +286,29 @@ macro csnzflags(op1, op2, value) {
 {}
 
 :umult data is u=1 & f_opc=9 & f_reg=0 & data {
-    a = zext(ah) + zext(al) * zext(data);
+    a = zext(al) * zext(data);
 }
 
 :smult data is u=0 & f_opc=9 & f_reg=0 & data {
-    a = sext(ah) + sext(al) * sext(data);
+    a = sext(al) * sext(data);
 }
 
 :udiv data is u=1 & f_opc=9 & f_reg=1 & data {
-    a = a >> 1;
-
-    local tmp:4 = a / zext(data);
-    al = tmp:2;
-
-    tmp = (a % zext(data)) << 1;
-    ah = ah | tmp:2;
+    local dividend:4 = a;
+    local divisor:4 = zext(data);
+    local quot:4 = dividend / divisor;
+    local rem:4 = dividend % divisor;
+    al = quot:2;
+    ah = rem:2;
 }
 
 :sdiv data is u=0 & f_opc=9 & f_reg=1 & data {
-    a = a s>> 1;
-
-    local tmp:4 = a s/ sext(data);
-    al = tmp:2;
-
-    tmp = (a s% sext(data)) << 1;
-    ah = ah | tmp:2;
+    local dividend:4 = a;
+    local divisor:4 = sext(data);
+    local quot:4 = dividend s/ divisor;
+    local rem:4 = dividend s% divisor;
+    al = quot:2;
+    ah = rem:2;
 }
 
 :tst data is f_opc=9 & f_reg=2 & data {
@@ -261,34 +320,55 @@ macro csnzflags(op1, op2, value) {
     call branch_addr;
 }
 
+:bsr ind_addr is f_opc=9 & f_reg=3 & ind_addr {
+    lr = inst_next >> 1;
+    call [ind_addr];
+}
+
 :lsl data is f_all=9; f_opc=0xa & f_reg=0 & data {
-    local tmp:2 = al;
-    al = al << data;
-    csnzflags(tmp, data, al);
+    local cnt:2 = data;
+    c = ((a << (cnt - 1)) s< 0);
+    a = a << cnt;
+    nzflags(al);
 }
 
 :asl data is f_opc=0xa & f_reg=0 & data {
-    local tmp:2 = al;
-    al = al << data;
-    csnzflags(tmp, data, al);
+    local cnt:2 = data;
+    c = ((a << (cnt - 1)) s< 0);
+    a = a << cnt;
+    nzflags(al);
 }
 
 :lsr data is f_all=9; f_opc=0xa & f_reg=1 & data {
-    local tmp:2 = al;
-    al = al >> data;
-    csnzflags(tmp, data, al);
+    local cnt:2 = data;
+    c = (((a >> (cnt - 1)) & 1) != 0);
+    a = a >> cnt;
+    nzflags(al);
 }
 
 :asr data is f_opc=0xa & f_reg=1 & data {
-    local tmp:2 = al;
-    al = al s>> data;
-    csnzflags(tmp, data, al);
+    local cnt:2 = data;
+    c = (((a s>> (cnt - 1)) & 1) != 0);
+    a = a s>> cnt;
+    nzflags(al);
 }
 
-:asr data is f_opc=0xa & f_reg=2 & data {
-    local tmp:2 = al;
-    al = al s>> data;
-    csnzflags(tmp, data, al);
+:rol data is f_opc=0xa & f_reg=2 & data {
+    local cnt:2 = data;
+    local cin:4 = zext(c);
+    local old:4 = a;
+    c = ((old << (cnt - 1)) s< 0);
+    a = (old << cnt) | (cin << (cnt - 1));
+    nzflags(al);
+}
+
+:ror data is f_opc=0xa & f_reg=3 & data {
+    local cnt:2 = data;
+    local cin:4 = zext(c);
+    local old:4 = a;
+    c = (((old >> (cnt - 1)) & 1) != 0);
+    a = (old >> cnt) | (cin << (32 - cnt));
+    nzflags(al);
 }
 
 :rts is f_opc=0xe & f_right=2 & f_opnd=0 {
@@ -299,32 +379,82 @@ macro csnzflags(op1, op2, value) {
     goto branch_addr;
 }
 
+:bra ind_addr is f_opc=0xe & f_reg=0 & ind_addr {
+    goto [ind_addr];
+}
+
+:bra retaddr is f_opc=0xe & f_reg=0 & retaddr {
+    return [retaddr];
+}
+
 :blt branch_addr is f_opc=0xe & f_reg=1 & branch_addr {
     if (s == 1) goto branch_addr;
+}
+
+:blt ind_addr is f_opc=0xe & f_reg=1 & ind_addr {
+    if (s != 1) goto <skip>;
+    goto [ind_addr];
+  <skip>
 }
 
 :bpl branch_addr is f_opc=0xe & f_reg=2 & branch_addr {
     if (n == 0) goto branch_addr;
 }
 
+:bpl ind_addr is f_opc=0xe & f_reg=2 & ind_addr {
+    if (n != 0) goto <skip>;
+    goto [ind_addr];
+  <skip>
+}
+
 :bmi branch_addr is f_opc=0xe & f_reg=3 & branch_addr {
     if (n == 1) goto branch_addr;
+}
+
+:bmi ind_addr is f_opc=0xe & f_reg=3 & ind_addr {
+    if (n != 1) goto <skip>;
+    goto [ind_addr];
+  <skip>
 }
 
 :bne branch_addr is f_opc=0xf & f_reg=0 & branch_addr {
     if (z == 0) goto branch_addr;
 }
 
+:bne ind_addr is f_opc=0xf & f_reg=0 & ind_addr {
+    if (z != 0) goto <skip>;
+    goto [ind_addr];
+  <skip>
+}
+
 :beq branch_addr is f_opc=0xf & f_reg=1 & branch_addr {
     if (z == 1) goto branch_addr;
+}
+
+:beq ind_addr is f_opc=0xf & f_reg=1 & ind_addr {
+    if (z != 1) goto <skip>;
+    goto [ind_addr];
+  <skip>
 }
 
 :bcc branch_addr is f_opc=0xf & f_reg=2 & branch_addr {
     if (c == 0) goto branch_addr;
 }
 
+:bcc ind_addr is f_opc=0xf & f_reg=2 & ind_addr {
+    if (c != 0) goto <skip>;
+    goto [ind_addr];
+  <skip>
+}
+
 :bcs branch_addr is f_opc=0xf & f_reg=3 & branch_addr {
     if (c == 1) goto branch_addr;
+}
+
+:bcs ind_addr is f_opc=0xf & f_reg=3 & ind_addr {
+    if (c != 1) goto <skip>;
+    goto [ind_addr];
+  <skip>
 }
 
 :enterl imm is f_opc=0 & f_right=0xb & imm {
@@ -337,21 +467,23 @@ macro csnzflags(op1, op2, value) {
 }
 
 :brxl is f_opc=0 & f_right=9 & f_opnd=0xfe {
-    goto [xl];
+    local next:3 = inst_next >> 1;
+    local dest:3 = next + sext(xl);
+    goto [dest];
 }
 
 :bgt branch_addr is f_opc=2 & f_mode=0 & f_reg=0 & branch_addr {
-    if ((n == 0) && (z == 0)) goto branch_addr;
+    if ((s == 0) && (z == 0)) goto branch_addr;
 }
 
 :bge branch_addr is f_opc=2 & f_mode=0 & f_reg=1 & branch_addr {
-    if (n == 0) goto branch_addr;
+    if (s == 0) goto branch_addr;
 }
 
 :ble branch_addr is f_opc=2 & f_mode=0 & f_reg=2 & branch_addr {
-    if ((n == 1) && (z == 1)) goto branch_addr;
+    if ((s == 1) || (z == 1)) goto branch_addr;
 }
 
 :bcz branch_addr is f_opc=2 & f_mode=0 & f_reg=3 & branch_addr {
-    if ((c == 1) && (z == 1)) goto branch_addr;
+    if ((c == 1) || (z == 1)) goto branch_addr;
 }
