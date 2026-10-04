@@ -8,12 +8,7 @@ define space mem      type=ram_space      size=3 wordsize=2;
 define register offset=0x0 size=4 [ a     x                   ];
 define register offset=0x0 size=2 [ al ah xl xh y pc lr flags ];
 
-define bitrange
-    z=flags[0,1]
-    n=flags[1,1]
-    c=flags[2,1]
-    s=flags[3,1]
-;
+define register offset=0x20 size=1 [ z n c s ];
 
 define register offset=0x100 size=4 contextreg;
 
@@ -28,6 +23,7 @@ define token opc (16)
     f_sopnd=(8,15) signed
     f_opnd=(8,15)
     f_opnd_hi1=(15,15)
+    f_hi4=(12,15)
     f_opnd_lo4=(8,11)
     dummy1=(13,15)
     dummy2=(8,12)
@@ -165,7 +161,12 @@ define pcodeop blockcopy;
 
 # TODO: Figure out what bc/bc2 do
 :bc  is f_opc=0 & f_right=9 & f_opnd=0xff { blockcopy(y, xl, al); }
-:bc2 is f_opc=0 & f_right=9 & f_opnd=0xfd {}
+:bc2 is f_opc=0 & f_right=9 & f_opnd=0xfd { blockcopy(ah, xl, al); }
+
+define pcodeop debugprint;
+
+:print "x" is f_opc=0 & f_right=9 & f_hi4=0xa { debugprint(xl); }
+:print "y" is f_opc=0 & f_right=9 & f_hi4=0xb { debugprint(y); }
 
 :nop is f_all=0 {}
 :sleep is f_opc=0 & f_right=8 & f_opnd=0 {}
@@ -176,8 +177,12 @@ define pcodeop blockcopy;
 # Return from interrupt
 :rti is f_opc=0 & f_right=0xd {}
 
-:ld f_ld, ydata is f_opc=0 & f_ld & f_right=5 & ydata {
-    f_ld = ydata;
+:ld "flags", ydata is f_opc=0 & f_right=5 & ydata {
+    local packed:2 = ydata;
+    z = (packed & 1) != 0;
+    n = (packed & 2) != 0;
+    c = (packed & 4) != 0;
+    s = (packed & 8) != 0;
 }
 
 :ld f_ld, ydata is f_opc=0 & f_ld & f_mid=3 & ydata {
@@ -190,8 +195,8 @@ define pcodeop blockcopy;
     nzflags(f_reg);
 }
 
-:st f_st, ydata is f_opc=0 & f_right=1 & f_st & ydata {
-    ydata = f_st;
+:st "flags", ydata is f_opc=0 & f_right=1 & ydata {
+    ydata = zext(z) | (zext(n) << 1) | (zext(c) << 2) | (zext(s) << 3);
 }
 
 :st f_st, ydata is f_opc=0 & f_st & f_mid=1 & ydata {
