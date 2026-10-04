@@ -6,8 +6,6 @@ There are quite a few things I guessed on or fudged here but it seems to work we
 
 ## Changes in this fork
 
-The fixes below came from decompiling two XAP2 images from a CSR-based Bluetooth speaker (a 784 KB stack firmware and a 527 KB VM application, about 13,000 functions). Each one was checked against instruction words in the firmware. The decoded mnemonics now agree with an independent XAP2 disassembler on 304,335 of 304,343 instructions of the stack image.
-
 - **Absolute addresses.** The 8-bit operand of `@H'nnnn` is signed, like immediates and offsets. It was treated as unsigned, which moved every address whose low byte is 0x80 or more up by 0x100 (and left unprefixed ones such as `@H'fff9` at `0x00f9` instead of `0xfff9`).
 - **`AH:AL` is one 32-bit accumulator, `AH` high.** The register overlay had `al` in the high half. Shifts and rotates now act on all 32 bits, and `rol`/`ror` (rotate through carry) are decoded; `asr` had been decoded twice and `ror` not at all.
 - **Multiply and divide.** `umult`/`smult` compute `AL * d` into `AH:AL`. `udiv`/`sdiv` divide `AH:AL` by `d`, quotient in `AL`, remainder in `AH`.
@@ -17,6 +15,5 @@ The fixes below came from decompiling two XAP2 images from a CSR-based Bluetooth
 - **`brxl`** branches relative to the next instruction, by the signed value in `xl`.
 - **Indirect branches and calls** (`@addr`, `@(off,y)`, `X+#off`) are `BRANCHIND`/`CALLIND`, with `xh` as the upper address byte. They were direct branches to a memory varnode, which made Ghidra's constant-propagation and stack analyzers fail for the whole program. `bra @(-1,y)` and `bra @(-3,y)` are function returns.
 - **`bc`** is a `blockcopy(dst, src, count)` user op (copy `AL` words from `[X]` to `[Y]`) instead of a no-op.
-- `xap2.sla` is rebuilt from the fixed spec with Ghidra 12.1.4.
 
-Not changed, and not verified against hardware: the calling convention (`al`, `ah`, the merged `a`, then the stack), `bc2`, the `print` instruction, N and Z after shifts (taken from `al`), and rotate counts other than 1 (the firmware only uses 1).
+Not changed, and not verified against hardware: the calling convention (`al`, `ah`, the merged `a`, then the stack), `bc2`, the `print` instruction, N and Z after shifts (taken from `al`), and rotate counts other than 1.
